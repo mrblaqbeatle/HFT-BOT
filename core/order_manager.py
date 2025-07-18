@@ -2,6 +2,7 @@
 # Handles sending and monitoring trades via MetaTrader5
 import MetaTrader5 as mt5
 import logging
+import time
 from config import CONFIG
 
 class OrderManager:
@@ -21,11 +22,15 @@ class OrderManager:
             'type_time': mt5.ORDER_TIME_GTC,
             'type_filling': mt5.ORDER_FILLING_IOC,
         }
-        result = mt5.order_send(close_request)
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
-            logging.error(f"Failed to close position {pos.ticket}: {result.retcode}")
-        else:
-            logging.info(f"Closed position {pos.ticket}")
+        for _ in range(3):  # Retry up to 3 times for requotes/errors
+            result = mt5.order_send(close_request)
+            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                logging.info(f"Closed position {pos.ticket}")
+                return True
+            else:
+                logging.error(f"Failed to close position {pos.ticket}: {result.retcode}, retrying...")
+                time.sleep(0.01)
+        return False
     def __init__(self, symbol):
         self.symbol = symbol
         self.magic = CONFIG['magic_number']

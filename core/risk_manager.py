@@ -7,7 +7,7 @@ import logging
 class RiskManager:
     def __init__(self, symbol):
         self.symbol = symbol
-        self.stop_loss_usd = CONFIG['stop_loss_usd']
+        self.stop_loss_usd = CONFIG.get('stop_loss_usd', 0.5)  # Default to 0.5 USD if not set
         self.lot_size = CONFIG['lot_size']
 
     def calc_sl_tp(self, direction, entry_price):

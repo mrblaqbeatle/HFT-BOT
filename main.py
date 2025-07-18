@@ -7,6 +7,9 @@ from config import CONFIG
 from core.order_manager import OrderManager
 from core.risk_manager import RiskManager
 from core.profit_monitor import ProfitMonitor
+from core.tick_buffer import TickBuffer
+from core.entry_logic import EntryLogic
+from core.exit_logic import ExitLogic
 
 logging.basicConfig(
     format='%(asctime)s %(levelname)s: %(message)s',
@@ -26,48 +29,45 @@ def main():
     order_mgr = OrderManager(symbol)
     risk_mgr = RiskManager(symbol)
     profit_mon = ProfitMonitor(symbol)
+    tick_buffer = TickBuffer(window=CONFIG['TICK_VELOCITY_WINDOW'])
+    entry_logic = EntryLogic(tick_buffer)
+    exit_logic = ExitLogic()
     logging.info(f"Bot initialized for {symbol}.")
     try:
         last_status = time.time()
         while True:
+            # Get latest tick
+            tick = mt5.symbol_info_tick(symbol)
+            tick_buffer.add_tick(tick.bid, tick.ask, tick.volume)
+            # Frequent status log
             if time.time() - last_status > 2:
-                logging.info("[ACTIVE] HFT flipping: monitoring, entering, and closing trades...")
+                logging.info("[ACTIVE] HFT: monitoring, entering, and closing trades...")
                 last_status = time.time()
-
-            symbol_info = mt5.symbol_info(symbol)
-            spread = symbol_info.spread
-            if spread < CONFIG['min_spread'] or spread > CONFIG['max_spread']:
-                time.sleep(0.05)
-                continue
-
+            # Check open trades
             open_trades = order_mgr.get_open_trades()
-            # Close all trades that are in profit immediately
+            # Exit logic: close trades with profit, timeout, or loss prevention
             for pos in open_trades:
-                if pos.profit > 0:
+                if pos.ticket not in exit_logic.open_times:
+                    exit_logic.register_open(pos)
+                if exit_logic.should_close(pos):
                     order_mgr.close_position(pos)
+                    exit_logic.unregister(pos)
                     logging.info(f"[CLOSE] Closed ticket {pos.ticket} for profit: {pos.profit:.2f}")
-
             # Check if profit target is hit
             if profit_mon.check_profit_target():
                 order_mgr.close_all_trades()
                 logging.info("Bot stopping for the day.")
                 break
-
-            # If we can open more trades, open both a buy and a sell (flipping both ways)
-            if len(open_trades) < CONFIG['max_open_trades']:
-                # Open both directions for maximum flipping
-                price_ask = mt5.symbol_info_tick(symbol).ask
-                price_bid = mt5.symbol_info_tick(symbol).bid
-                sl_buy, tp_buy = risk_mgr.calc_sl_tp('buy', price_ask)
-                sl_sell, tp_sell = risk_mgr.calc_sl_tp('sell', price_bid)
-                result_buy = order_mgr.send_order('buy', CONFIG['lot_size'], sl_buy, tp_buy)
-                if result_buy:
-                    logging.info(f"[OPEN] BUY at {price_ask}")
-                result_sell = order_mgr.send_order('sell', CONFIG['lot_size'], sl_sell, tp_sell)
-                if result_sell:
-                    logging.info(f"[OPEN] SELL at {price_bid}")
-
-            time.sleep(0.05)
+            # Entry logic: only enter if high-probability signal
+            if len(open_trades) < CONFIG['MAX_TRADES']:
+                signal = entry_logic.can_enter_trade()
+                if signal:
+                    price = tick.ask if signal == 'buy' else tick.bid
+                    sl, tp = risk_mgr.calc_sl_tp(signal, price)
+                    result = order_mgr.send_order(signal, CONFIG['lot_size'], sl, tp)
+                    if result:
+                        logging.info(f"[OPEN] {signal.upper()} at {price}")
+            time.sleep(0.01)
     except Exception as e:
         logging.error(f"Exception: {e}")
     finally:
